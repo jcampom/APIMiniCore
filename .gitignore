@@ -1,0 +1,25 @@
+## [ENTREGABLE MINICORE] - Reglas de exclusión de artefactos locales
+
+# Excluir carpetas de compilación e intermediarios de Visual Studio
+[Bb]in/
+[Oo]bj/
+
+# Excluir paquetes NuGet descargados localmente (Súper importante en .NET 4.8)
+packages/
+
+# Excluir la carpeta de configuración oculta de Visual Studio
+.vs/
+
+# Excluir archivos de configuración de usuario locales
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Excluir archivos de secretos, llaves criptográficas o tokens locales
+*.json.secret
+secrets.config
+appSettings.secrets.config
+
+# Excluir bitácoras de logs locales generados por el servidor web
+*.log
