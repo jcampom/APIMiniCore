@@ -68,3 +68,38 @@ Para cumplir la regla de negocio y convivir con la restricción física de llave
 1. Abre **Postman** e importa el archivo de la colección: `MiniCoreBank_AcceptanceTests.postman_collection.json`.
 2. Haz clic derecho en el nombre de la colección importada, selecciona **Edit** (Editar), ve a la pestaña **Variables** y actualiza el campo de valor actual (`Current Value`) de la variable `baseUrl` con la dirección local copiada en el paso anterior. Guarda los cambios.
 3. Ejecuta cada uno de los requests de forma ordenada para verificar la suite completa de escenarios de aceptación (E1 a E12).
+
+---
+
+## 6. ¿Qué cambiaría si el servicio debe soportar 500 transferencias por segundo? ¿Cuál es el mayor riesgo que aún queda? ¿Qué cambia si hubiera varias monedas?
+
+Las preguntas corresponden a : Escabilidad, Concurrencia y Multi-moneda
+
+1. Escalabilidad a Alta Carga (500 TPS)
+A este nivel de transaccionalidad, el diseño de persistencia síncrona actual bajo aislamiento Serializable generaría un cuello de botella crítico por agotamiento del pool de conexiones (Connection Pooling) y bloqueos extendidos en disco (Lock Contention).
+
+• Estrategia de Mitigación (Desacoplamiento Asíncrono): El endpoint POST /api/transfers debe evolucionar hacia un modelo no bloqueante. Al recibir el request, la API valida el contrato, encola el mensaje en un broker de alta disponibilidad (RabbitMQ o Apache Kafka) y retorna de inmediato un estado 202 Accepted con un ID de seguimiento.
+
+• Procesamiento Backend: Un grupo escalable de servicios en segundo plano independientes (Workers basados en IHostedService o procesos de consola distribuidos) consumen los mensajes de la cola de forma asíncrona, procesando las transacciones contables según la capacidad de la base de datos.
+
+• Optimización de Idempotencia: La capa de verificación de idempotencia se traslada fuera de SQL Server hacia una base de datos en memoria caché como Redis, mitigando las lecturas recurrentes en disco a microsegundos mediante políticas de expiración automáticas (TTL de 24 o 48 horas).
+
+2. Mitigación del Mayor Riesgo Latente: Deadlocks (Bloqueos Mutuos)
+A pesar de contar con transacciones protegidas, el escenario transaccional actual es altamente vulnerable a Deadlocks en operaciones concurrentes cruzadas (por ejemplo, Petición 1: Cuenta A ➔ Cuenta B; Petición 2 en el mismo milisegundo: Cuenta B ➔ Cuenta A). El Hilo 1 adquiere un candado exclusivo (UPDLOCK) sobre la Cuenta A y espera por la B, mientras que el Hilo 2 bloquea la Cuenta B y espera por la A, forzando a SQL Server a matar una de las transacciones por seguridad.
+
+• Solución Arquitectónica (Ordenamiento Estricto de Recursos): Se mitiga implementando una regla de ordenamiento alfabético determinista en C# antes de interactuar con el motor de base de datos. La API comparará los strings de los identificadores de cuenta y ejecutará el SELECT ... WITH (UPDLOCK) respetando siempre un orden secuencial (ej. la cuenta menor va primero). De esta manera, el Hilo 2 se alineará ordenadamente en la fila del Hilo 1, eliminando la posibilidad física de bloqueo mutuo.
+
+• Capa de Resiliencia: Se incorpora el patrón de reintentos (Retry Pattern) utilizando librerías como Polly en .NET para capturar excepciones específicas de transitorios de base de datos (como el código de error de SQL para Deadlocks) y reintentar de forma automática y transparente para el usuario.
+
+3. Soporte e Impacto de Múltiples Divisas (Multi-currency)
+El soporte para transacciones cambiarias (ej. Cuenta Origen en EUR y Cuenta Destino en USD) introduce volatilidad financiera y requiere un rediseño de la consistencia contable en la base de datos.
+
+• Control de Volatilidad (Patrón Quote): No se puede aplicar la tasa de cambio vigente al milisegundo final de la persistencia porque rompería la expectativa del usuario. El contrato de la API debe exigir un QuoteId (identificador de cotización) emitido por un servicio u oráculo de tasas de cambio externo. Este ID bloquea y congela la tasa de conversión por una ventana de tiempo estricta (ej. 2 minutos) para garantizar que los importes calculados coincidan con lo pactado en pantalla.
+
+• Evolución de La tabla de movimientos (Movements): debe expandirse contablemente para mantener la paridad y la trazabilidad de cara a auditorías. Cada asiento debe registrar de forma obligatoria cuatro nuevas variables: SourceCurrency, DestinationCurrency, ExchangeRateApplied y ConvertedAmount.
+
+• Normalización de Reglas de Negocio: El motor de validación de comisiones y límites diarios de la API deberá transformar dinámicamente los montos operados a una divisa base unificada (como USD) para poder evaluar con precisión si la cuenta supera el umbral de los $500.00 de comisión o el límite diario de $5,000.00 acumulados.
+
+**Qué haría si tuviera una semana más?**
+
+En este momento no podría convivir con dos versiones de .NET (.NET framework 4.8 Y .NET Core). Tendría que disponer de otro equipo configurado para desarrollar exclusivamente en .NET Core. Pero con mi equipo de cómputo actual, y con el framework que tengo instalado, podría terminar de probar y/o completar algunos casos de prueba, lo cual podría derivar en afinamiento(s) a nivel de código. Y los temas de manejo de diversas divisas, que es como lo que más se podría adicionar al código existente, ya que los demás temas impactan la arquitectura de la aplicación.
